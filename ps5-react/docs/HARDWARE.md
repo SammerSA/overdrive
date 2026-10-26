@@ -1,23 +1,44 @@
 # Hardware evidence
 
-## Four-worker accounting follow-up — host checks only, 2026-10-26
+## Four-worker accounting follow-up — PS5 validation, 2026-10-26
 
-New stripped PS5 helper SHA-256:
+Firmware 12.20 (12.200.005), kstuff and ShadowMountPlus 1.7beta8 active.
+Exact stripped PS5 helper SHA-256:
 `f5bcec232e736d954f17633abfd951797d55fb5dbfccf8865a0fda6b03506cfe`.
-This revision has not yet been executed on the console; the earlier evidence
-below applies to its exact earlier helper, not this follow-up.
+This helper executed through the running ELF loader on port 9021, followed by
+7ZX1 requests.
 
-Host checks exercised four concurrently active readers with a 170,000-file
-index (271 MiB planned runtime / 302 MiB opening allowance). The actual ASTRO
-header index selected four readers with 281 MiB runtime / 312 MiB opening;
+- A 12-file fixture of approximately 48 MiB completed with four workers used
+  and four concurrently active. All 12 SHA-256 receipts and FTP read-back
+  hashes matched. Its accounting reported 4 MiB shared / 4 MiB per reader,
+  with 117 MiB planned runtime / 148 MiB opening allowance.
+- A 170,000-file index also used four workers with four concurrently active,
+  reporting 28 MiB shared / 36 MiB per reader and 271 MiB planned runtime /
+  302 MiB opening allowance. Cancellation was requested after 128 receipts;
+  151 completed-file receipts arrived before the `cancelled` acknowledgement.
+  This partial run was not a full output-hash verification.
+- The 320 MiB pre-decode memory claims took 707–833 ms. All test files and
+  directories were removed after testing.
+
+The local Overdrive image SHA-256
+`cd2b5ac9776c19f50d4f860a7d0275633a40365db6d3ddc6723f6324f14d450b`
+was installed after releasing and refreshing the previous ShadowMount backing
+mount. The mounted helper hash matched the helper above, and the application
+launched with build stamp `f6fe484-rd-first-tb16-7zmt4`. Saved settings and
+credentials, and the other jobs' queue states, were preserved.
+
+Additional host checks confirmed the actual ASTRO header index selected four
+readers with 281 MiB runtime / 312 MiB opening allowance;
 its sparse header-only sample deliberately lacked payload data and was expected
 to fail decoding. A 4,096-file, 128-component path fixture was refused for
 temporary-index memory before creating any directories. Compound LZMA2 codecs
 also retain a single decoder-thread setting instead of multiplying the budget.
 
-These are memory-planning and host extraction checks, not PS5 performance or
-compatibility evidence. PS5 linking and package verification passed. Deployment
-and console validation remain pending while the console services are unavailable.
+PS5 linking and package verification also passed. These results apply to the
+exact artifacts and firmware/loader above; they do not establish compatibility
+with other setups. No controlled speed comparison was performed for this helper,
+and these tests do not establish a game-archive speedup. The rebased JavaScript
+integration has separate host-test coverage.
 
 ## Local parallel 7z helper — 2026-10-26
 
