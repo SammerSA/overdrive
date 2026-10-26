@@ -30,7 +30,7 @@
 </p>
 
 > [!NOTE]
-> This project does not support piracy. We host no copyrighted material
+> This project is provided as-is. We host no copyrighted material
 > and are not responsible for any third-party content.
 
 <p align="center">
