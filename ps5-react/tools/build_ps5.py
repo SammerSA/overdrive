@@ -335,6 +335,7 @@ def main():
     shutil.copy2(unrar_source() / "license.txt", notices / "unRAR-license.txt")
     shutil.copy2(sevenzip_source() / "DOC/License.txt", notices / "7zip-LICENSE.txt")
     shutil.copy2(sevenzip_source() / "DOC/copying.txt", notices / "7zip-LGPL-2.1.txt")
+    shutil.copy2(ROOT / "patches/7zip-memory-accounting.patch", notices / "7zip-memory-accounting.patch")
     stb = (stb_image() / "stb_image.h").read_text()
     (notices / "stb_image-LICENSE").write_text(stb[stb.index("This software is available under 2 licenses"):])
     copy_notices(compatibility_client, notices / "networking")

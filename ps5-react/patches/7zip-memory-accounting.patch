@@ -1,0 +1,13 @@
+Local change to 7-Zip 26.05 (LGPL-2.1-or-later): expose a const database view
+for accounting. No decoding, allocation or archive-handling behavior is changed.
+
+--- a/CPP/7zip/Archive/7z/7zHandler.h
++++ b/CPP/7zip/Archive/7z/7zHandler.h
+@@ -168,5 +168,7 @@
+ public:
+   CHandler();
++  // Read-only accounting of this handler's private, retained header database.
++  const CDbEx &MemoryDatabase() const { return _db; }
+   ~CHandler()
+   {
+     Close();

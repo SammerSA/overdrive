@@ -629,7 +629,10 @@ extract while downloading. Validated 7z with at most 288 MiB of declared decoder
 memory uses `rar-extract`, started through the payload loader, with native
 7-Zip 26.05 outside the title's heap. It schedules independent folders across up
 to four workers, or uses native LZMA2 reset-block threads for one folder. Metadata,
-writer buffers and decoder memory share a planned 320 MiB budget. Large dictionaries
+writer buffers and decoder memory share a planned 320 MiB budget. Shared output
+paths and scheduling data are counted once; each SDK reader's retained database
+is measured separately. Readers open sequentially with separate header-scratch
+headroom before the writer threads start. Large dictionaries
 automatically reduce threading, and a stream without independent reset blocks may
 still decode serially. Before opening the SDK it claims and touches 320 MiB;
 when the console needs over a second to hand it over (it is

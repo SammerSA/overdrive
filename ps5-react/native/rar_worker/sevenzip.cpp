@@ -17,6 +17,7 @@
 #include <chrono>
 #include <map>
 #include <set>
+#include <string_view>
 
 // The third-party 7z Zstandard method ID that libarchive already accepts.
 namespace NCompress { namespace NZstd {
@@ -120,25 +121,61 @@ Z7_COM7F_IMF(Input::Seek(Int64 offset, UInt32 origin, UInt64* result)) {
 struct Reader {
   CMyComPtr<IInArchive> archive;
   CMyComPtr<IInStream> input;
+  NArchive::N7z::CHandler* handler = nullptr; // Owned by archive.
+  bool configure(unsigned threads, std::uint64_t decoder_budget) {
+    const wchar_t* names[] = {L"mt", L"mtf", L"memuse"};
+    CPropVariant values[3];
+    values[0] = UInt32(threads);
+    values[1] = true;
+    values[2] = UInt64(decoder_budget);
+    return static_cast<ISetProperties*>(handler)->SetProperties(names, values, 3) == S_OK;
+  }
   bool open_archive(const Options& o, State& state, unsigned threads, std::uint64_t decoder_budget) {
     auto* stream = new Input(state);
     input = stream;
     if (!stream->open_sources(o.sources)) return false;
-    auto* handler = new NArchive::N7z::CHandler;
+    handler = new NArchive::N7z::CHandler;
     archive = handler;
-    const wchar_t* names[] = {L"mt", L"mtf", L"memuse"};
-    CPropVariant values[3];
-    values[0] = UInt32(threads);
-    values[1] = true; // Push decoding through filters retains the LZMA2 MT path.
-    values[2] = UInt64(decoder_budget);
-    return static_cast<ISetProperties*>(handler)->SetProperties(names, values, 3) == S_OK && archive->Open(input, nullptr, nullptr) == S_OK;
+    return configure(threads, decoder_budget) && archive->Open(input, nullptr, nullptr) == S_OK;
+  }
+  std::uint64_t database_bytes() const {
+    const auto& db = handler->MemoryDatabase();
+    const auto vector_bytes = [](const auto& v) { return std::uint64_t(v.Size()) * sizeof(v[0]); };
+    const auto optional_bytes = [&](const auto& v) { return vector_bytes(v.Defs) + vector_bytes(v.Vals); };
+    // Record vectors may retain growth capacity. The raw name/coder buffers and
+    // object arrays below have exact sizes in the pinned SDK.
+    std::uint64_t vectors = vector_bytes(db.Files) + vector_bytes(db.IsAnti) +
+        optional_bytes(db.CTime) + optional_bytes(db.ATime) + optional_bytes(db.MTime) +
+        optional_bytes(db.StartPos) + optional_bytes(db.Attrib) + optional_bytes(db.FolderCRCs) +
+        vector_bytes(db.ParsedMethods.IDs) + vector_bytes(db.ArcInfo.FileInfoPopIDs);
+    std::uint64_t bytes = 4 * mib + vectors + vectors / 4 + db.NamesBuf.Size() + db.CodersData.Size();
+    const std::uint64_t files = db.Files.Size(), folders = db.NumFolders;
+    bytes += (files + 1) * sizeof(size_t) + files * sizeof(NArchive::N7z::CNum);
+    if (db.NumPackStreams) bytes += (std::uint64_t(db.NumPackStreams) + 1) * sizeof(UInt64);
+    if (folders) {
+      bytes += folders * (sizeof(NArchive::N7z::CNum) * 2 + sizeof(Byte));
+      bytes += (folders + 1) * (sizeof(NArchive::N7z::CNum) * 2 + sizeof(size_t));
+      bytes += std::uint64_t(db.FoToCoderUnpackSizes[db.NumFolders]) * sizeof(UInt64);
+    }
+    return bytes;
+  }
+  bool single_lzma2_per_folder() const {
+    const auto& db = handler->MemoryDatabase();
+    for (unsigned i = 0; i < db.NumFolders; ++i) {
+      NArchive::N7z::CFolder folder;
+      db.ParseFolderInfo(i, folder);
+      unsigned decoders = 0;
+      for (unsigned j = 0; j < folder.Coders.Size(); ++j)
+        if (folder.Coders[j].MethodID == 0x21 && ++decoders > 1) return false;
+    }
+    return true;
   }
 };
 struct Entry { std::string name; std::uint64_t size = 0; bool directory = false; };
 struct Plan {
   std::vector<Entry> entries;
   std::vector<std::vector<UInt32>> groups;
-  std::uint64_t metadata = 0;
+  std::uint64_t shared_memory = 0, reader_memory = 0, planned_memory = 0, opening_memory = 0;
   unsigned workers = 1, decoder_threads = 1;
   std::atomic<unsigned> used{0}, active{0}, peak{0};
   std::atomic<std::uint64_t> write_ns{0}, sync_ns{0}, wait_ns{0};
@@ -154,8 +191,28 @@ std::string plan_archive(Reader& reader, const Options& o, Plan& plan, State& st
   UInt32 count = 0;
   if (reader.archive->GetNumberOfItems(&count) != S_OK || count > 1000000) return damaged;
   std::map<UInt32, std::vector<UInt32>> folders;
-  std::set<std::string> files, directories;
-  std::uint64_t declared = 0, name_bytes = 0;
+  std::set<std::string, std::less<>> files, directories;
+  std::uint64_t declared = 0;
+  plan.reader_memory = reader.database_bytes();
+  // Validation temporarily retains duplicate file names and implicit directory
+  // prefixes. Bound those too, before insertion: a small header can describe
+  // thousands of distinct deep paths whose expanded prefixes dwarf the header.
+  // Prepay worst-case growth/overlap of the index vectors and their final move.
+  std::uint64_t validation_memory = plan.reader_memory + 8 * mib +
+      std::uint64_t(count) * (sizeof(Entry) + sizeof(std::vector<UInt32>) + 16);
+  const auto charge = [&](std::uint64_t bytes) {
+    if (validation_memory > budget || bytes > budget - validation_memory) return false;
+    validation_memory += bytes;
+    return true;
+  };
+  const auto keep_name = [&](auto& names, std::string_view name) {
+    if (names.contains(name)) return 0;
+    // Node links/color, string object, allocator rounding and the character data.
+    if (!charge(sizeof(std::string) + 8 * sizeof(void*) + name.size() + 48)) return -1;
+    names.emplace(name);
+    return 1;
+  };
+  if (validation_memory > budget) return too_much_memory;
   plan.entries.reserve(count);
   for (UInt32 i = 0; i < count; ++i) {
     if (state.stopped()) return {};
@@ -189,41 +246,69 @@ std::string plan_archive(Reader& reader, const Options& o, Plan& plan, State& st
     CPropVariant size;
     if (!property(reader.archive, i, kpidSize, size) || size.vt != VT_UI8) return damaged;
     e.size = size.uhVal.QuadPart;
+    if (!charge(e.name.capacity() + 1 + 16)) return too_much_memory;
     if (!e.directory) {
       if (e.size > o.limit - declared) return too_large;
       declared += e.size;
       if (flattened(o.flatten, e.name)) e.name = e.name.substr(e.name.rfind('/') + 1);
-      if (!files.insert(e.name).second) return unsafe;
+      const int kept = keep_name(files, e.name);
+      if (kept < 0) return too_much_memory;
+      if (!kept) return unsafe;
       CPropVariant block;
       if (!property(reader.archive, i, kpidBlock, block) || (block.vt != VT_EMPTY && block.vt != VT_UI4)) return damaged;
-      folders[block.vt == VT_UI4 ? block.ulVal : UINT32_MAX].push_back(i);
-    } else directories.insert(e.name);
-    name_bytes += e.name.size();
+      const UInt32 folder = block.vt == VT_UI4 ? block.ulVal : UINT32_MAX;
+      if (!folders.contains(folder) && !charge(128)) return too_much_memory;
+      folders[folder].push_back(i);
+    } else if (keep_name(directories, e.name) < 0) return too_much_memory;
     plan.entries.push_back(std::move(e));
   }
   // Precreate directories serially and reject file/dir and flattened collisions,
   // so parallel writers cannot change the meaning of another worker's path.
   for (const auto& e : plan.entries)
-    for (size_t at = e.name.find('/'); at != std::string::npos; at = e.name.find('/', at + 1)) directories.insert(e.name.substr(0, at));
+    for (size_t at = e.name.find('/'); at != std::string::npos; at = e.name.find('/', at + 1))
+      if (keep_name(directories, std::string_view(e.name.data(), at)) < 0) return too_much_memory;
   for (const auto& dir : directories) if (files.contains(dir)) return unsafe;
+  files.clear();
   for (const auto& dir : directories) {
     std::string target;
     if (!make_parents(o.destination, dir, target) ||
         (mkdir(target.c_str(), 0777) && (errno != EEXIST || !plain_directory(target)))) return strerror(errno);
   }
+  plan.groups.reserve(folders.size());
   for (auto& pair : folders) plan.groups.push_back(std::move(pair.second));
-  // Conservative metadata/path allowance per SDK reader. Memory is bounded for
-  // the whole extraction, rather than granting every thread the full budget.
-  plan.metadata = 8 * mib + std::uint64_t(count) * 192 + name_bytes * 4;
-  const auto per_reader = o.memory + plan.metadata + 24 * mib;
-  if (per_reader > budget) return too_much_memory;
+  folders.clear();
+  // Paths and the scheduling plan are shared, once. Only the SDK database is
+  // duplicated. Counting the shared index for every reader needlessly reduced
+  // large-file-count archives to two workers.
+  plan.shared_memory = 4 * mib + plan.entries.capacity() * sizeof(Entry) +
+      plan.groups.capacity() * sizeof(std::vector<UInt32>);
+  for (const auto& e : plan.entries) plan.shared_memory += e.name.capacity() + 1 + 16;
+  for (const auto& group : plan.groups) plan.shared_memory += group.capacity() * sizeof(UInt32) + 16;
   plan.workers = unsigned(std::min<std::uint64_t>({o.threads, std::uint64_t(std::max<long>(1, cores())),
-      std::max<size_t>(1, plan.groups.size()), budget / per_reader}));
+      std::max<size_t>(1, plan.groups.size())}));
+  // Readers open serially, before any writer exists. Leave a separate transient
+  // allowance for encoded headers and their decoder rather than opening four
+  // copies' scratch buffers at once. Runtime allowance includes each 16 MiB
+  // writer ring plus filter/read buffers and decoder-thread overhead.
+  for (;;) {
+    plan.planned_memory = plan.shared_memory + plan.workers * (plan.reader_memory + o.memory + 24 * mib);
+    plan.opening_memory = plan.shared_memory + plan.workers * plan.reader_memory + 128 * mib;
+    if (std::max(plan.planned_memory, plan.opening_memory) <= budget) break;
+    if (plan.workers == 1) return too_much_memory;
+    --plan.workers;
+  }
   const auto expected_block = std::max<std::uint64_t>(mib, std::max(o.memory, std::min<std::uint64_t>(256 * mib, o.memory * 4)));
   const auto mt_thread_memory = expected_block * 2 + expected_block / 16 + 320 * 1024;
-  const auto decoder_budget = budget / plan.workers - plan.metadata - 24 * mib;
+  const auto decoder_budget = (budget - plan.shared_memory) / plan.workers - plan.reader_memory - 24 * mib;
   plan.decoder_threads = plan.workers == 1 ? unsigned(std::max<std::uint64_t>(1,
       std::min<std::uint64_t>({o.threads, std::uint64_t(std::max<long>(1, cores())), decoder_budget / mt_thread_memory}))) : 1;
+  // SDK memory limits apply per codec. A compound folder must not grant the
+  // same reset-block thread budget independently to multiple LZMA2 decoders.
+  if (plan.decoder_threads > 1 && !reader.single_lzma2_per_folder()) plan.decoder_threads = 1;
+  if (plan.decoder_threads > 1) {
+    const auto decoder_memory = std::max(o.memory, mt_thread_memory * plan.decoder_threads);
+    plan.planned_memory = plan.shared_memory + plan.workers * (plan.reader_memory + decoder_memory + 24 * mib);
+  }
   return {};
 }
 class Output final : public ISequentialOutStream, public CMyUnknownImp {
@@ -301,18 +386,22 @@ std::string claim(std::uint64_t& took) {
   return took > 1000 ? "The console has too little free memory to extract this archive now. Close other apps and retry." : "";
 }
 void extract(const Options& o, State& state, Plan& plan) {
-  Reader first;
-  if (!first.open_archive(o, state, 1, o.memory)) { if (!state.stopped()) state.fail(damaged); return; }
-  if (const auto error = plan_archive(first, o, plan, state); !error.empty()) { state.fail(error); return; }
+  std::vector<std::unique_ptr<Reader>> readers;
+  readers.push_back(std::make_unique<Reader>());
+  if (!readers.front()->open_archive(o, state, 1, o.memory)) { if (!state.stopped()) state.fail(damaged); return; }
+  if (const auto error = plan_archive(*readers.front(), o, plan, state); !error.empty()) { state.fail(error); return; }
   if (state.stopped()) return;
-  first.archive.Release(); first.input.Release();
+  const auto decoder_budget = (budget - plan.shared_memory) / plan.workers - plan.reader_memory - 24 * mib;
+  for (unsigned i = 1; i < plan.workers; ++i) {
+    readers.push_back(std::make_unique<Reader>());
+    if (!readers.back()->open_archive(o, state, 1, o.memory)) { if (!state.stopped()) state.fail(damaged); return; }
+  }
+  for (auto& reader : readers) if (!reader->configure(plan.decoder_threads, decoder_budget)) { state.fail(damaged); return; }
   std::atomic<size_t> next{0};
   std::vector<std::thread> threads;
-  const auto run = [&] {
+  const auto run = [&](unsigned index) {
     try {
-      Reader reader;
-      const auto decoder_budget = budget / plan.workers - plan.metadata - 24 * mib;
-      if (!reader.open_archive(o, state, plan.decoder_threads, decoder_budget)) { if (!state.stopped()) state.fail(damaged); return; }
+      auto& reader = *readers[index];
       Writer writer;
       CMyComPtr<IArchiveExtractCallback> callback = new Callback(writer, state, o, plan);
       bool used = false;
@@ -336,7 +425,7 @@ void extract(const Options& o, State& state, Plan& plan) {
   };
   // Joining is unconditional, including a partially created pool: no decoder
   // can outlive the plan or the parent's cancellation acknowledgement.
-  try { for (unsigned i = 0; i < plan.workers; ++i) threads.emplace_back(run); }
+  try { for (unsigned i = 0; i < plan.workers; ++i) threads.emplace_back(run, i); }
   catch (...) { state.fail("Cannot start 7z decoder threads."); }
   for (auto& thread : threads) thread.join();
 }
@@ -384,6 +473,8 @@ int run() {
   say("t threads=" + std::to_string(plan.workers * plan.decoder_threads) + " workers=" + std::to_string(plan.workers) +
       " decoder_threads=" + std::to_string(plan.decoder_threads) + " cores=" + std::to_string(cores()) +
       " workers_used=" + std::to_string(plan.used.load()) + " active_peak=" + std::to_string(plan.peak.load()) +
+      " shared_mib=" + std::to_string(plan.shared_memory / mib) + " reader_mib=" + std::to_string(plan.reader_memory / mib) +
+      " planned_mib=" + std::to_string(plan.planned_memory / mib) + " opening_mib=" + std::to_string(plan.opening_memory / mib) +
       " claim=" + std::to_string(claim_took) + "ms extract=" + std::to_string(extract_took) +
       "ms write=" + std::to_string(plan.write_ns.load() / 1000000) + "ms/" + std::to_string(plan.writes.load()) +
       " fsync=" + std::to_string(plan.sync_ns.load() / 1000000) + "ms/" + std::to_string(plan.syncs.load()) +

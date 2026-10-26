@@ -148,7 +148,10 @@ required by the current SDK. No upstream contribution has been submitted.
 
 ## Native 7z extraction worker
 
-`sevenZipSource` pins unmodified 7-Zip 26.05 and its SHA-256. The separate
+`sevenZipSource` pins 7-Zip 26.05 and its SHA-256, with
+`patches/7zip-memory-accounting.patch` exposing a const view of the retained
+header database. This allows accurate per-reader accounting without changing
+decoding or allocation behavior. The separate
 `rar-extract` program links extraction-only 7z handlers and decoders (LZMA,
 LZMA2, Copy, Delta/branch filters, PPMd, BZip2, Deflate and Zstandard), without encoders,
 7-Zip RAR code or crypto. Most C decoder files are public domain; the C++
@@ -158,7 +161,8 @@ notices in `DOC/License.txt`. The MIT driver in
 another payload's installation/UI or IPC behavior.
 
 Builds preserve `DOC/License.txt` and `DOC/copying.txt` as
-`notices/7zip-LICENSE.txt` and `notices/7zip-LGPL-2.1.txt`. Distributions must
+`notices/7zip-LICENSE.txt` and `notices/7zip-LGPL-2.1.txt`, plus the accounting
+patch as `notices/7zip-memory-accounting.patch`. Distributions must
 provide corresponding helper source/build scripts and the pinned SDK source,
 or another compliant LGPL source/relinking arrangement. UnRAR retains its
 separate license; the helper is never linked into the GPL application.

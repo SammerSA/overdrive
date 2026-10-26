@@ -1,9 +1,10 @@
 # Copyright (C) 2026 half144 and PS5 React contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Additional attribution term: see LICENSE-ATTRIBUTION.
-"""Hash-pinned, unmodified 7-Zip extraction sources for the separate archive worker."""
+"""Hash-pinned 7-Zip extraction sources and reviewed worker integration patches."""
 import tarfile
-from common import DEPS, LOCK, fetch
+import subprocess
+from common import DEPS, LOCK, ROOT, digest, fetch
 
 
 def sevenzip_source():
@@ -11,11 +12,18 @@ def sevenzip_source():
     archive = fetch(pinned["url"], DEPS / f"7z-{pinned['version']}-src.tar.xz", pinned["sha256"])
     root = DEPS / f"7zip-{pinned['version']}"
     marker = root / ".extracted"
-    if not marker.exists() or marker.read_text() != pinned["sha256"]:
+    patches = [ROOT / name for name in pinned.get("patches", [])]
+    expected = pinned["sha256"] + "\n" + "\n".join(digest(patch) for patch in patches)
+    if not marker.exists() or marker.read_text() != expected:
         root.mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive) as package:
             package.extractall(root, filter="data")
-        marker.write_text(pinned["sha256"])
+        for patch in patches:
+            # The pinned SDK archive uses CRLF. Keep repository patches text-
+            # normalized, then apply exact CRLF contexts without stripping them.
+            contents = patch.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            subprocess.run(["patch", "-p1", "--forward", "--quiet", "--binary"], cwd=root, input=contents, check=True)
+        marker.write_text(expected)
     return root
 
 

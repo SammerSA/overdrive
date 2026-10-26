@@ -2,6 +2,14 @@
 
 ## Local patch — parallel 7z extraction
 
+- Count shared paths/scheduling data once and each SDK reader's retained
+  database separately. Open readers sequentially with a header-scratch allowance,
+  then start writers. This keeps four workers available for large file indexes
+  within the same 320 MiB planned budget. Large dictionaries or a single solid
+  block can still reduce parallelism; four workers are not forced past the budget.
+- Bound temporary validation indexes, including expanded directory prefixes,
+  before insertion so deeply nested names cannot exceed the budget during planning.
+
 - Decode validated 7z archives in the separate worker with pinned 7-Zip 26.05.
   Schedule independent folders across up to four readers, or use native LZMA2
   reset-block threads for one folder when memory permits. Keep the total planned

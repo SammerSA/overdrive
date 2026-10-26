@@ -1,5 +1,24 @@
 # Hardware evidence
 
+## Four-worker accounting follow-up — host checks only, 2026-10-26
+
+New stripped PS5 helper SHA-256:
+`f5bcec232e736d954f17633abfd951797d55fb5dbfccf8865a0fda6b03506cfe`.
+This revision has not yet been executed on the console; the earlier evidence
+below applies to its exact earlier helper, not this follow-up.
+
+Host checks exercised four concurrently active readers with a 170,000-file
+index (271 MiB planned runtime / 302 MiB opening allowance). The actual ASTRO
+header index selected four readers with 281 MiB runtime / 312 MiB opening;
+its sparse header-only sample deliberately lacked payload data and was expected
+to fail decoding. A 4,096-file, 128-component path fixture was refused for
+temporary-index memory before creating any directories. Compound LZMA2 codecs
+also retain a single decoder-thread setting instead of multiplying the budget.
+
+These are memory-planning and host extraction checks, not PS5 performance or
+compatibility evidence. PS5 linking and package verification passed. Deployment
+and console validation remain pending while the console services are unavailable.
+
 ## Local parallel 7z helper — 2026-10-26
 
 Firmware 12.20 (12.200.005), kstuff and ShadowMountPlus active. Exact stripped

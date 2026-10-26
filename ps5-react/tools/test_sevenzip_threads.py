@@ -15,14 +15,14 @@ from rar_worker import build_host
 from test_archives import number7z
 
 
-def archive7z(files, reset_blocks=False, dictionary=1 << 20, solid=1, delta=False, attributes=None, zstd=False):
+def archive7z(files, reset_blocks=False, dictionary=1 << 20, solid=1, delta=False, attributes=None, zstd=False, double_lzma2=False):
     """Small independent 7z writer, deliberately not using the decoder under test.
 
     Each group of `solid` files has one folder. Reset-block mode joins independent LZMA2
     streams in that folder, dropping only their end markers as the format permits.
     """
     prop = next(p for p in range(40) if (2 | (p & 1)) << (p // 2 + 11) == dictionary)
-    packed = []
+    packed, intermediate_sizes = [], []
     groups = [files[i:i + solid] for i in range(0, len(files), solid)]
     payloads = [b"".join(data for _, data in group) for group in groups]
     for data in payloads:
@@ -32,15 +32,20 @@ def archive7z(files, reset_blocks=False, dictionary=1 << 20, solid=1, delta=Fals
         chunks = [data[i:i + 4 * dictionary] for i in range(0, len(data), 4 * dictionary)] if reset_blocks else [data]
         filters = ([{"id": lzma.FILTER_DELTA, "dist": 1}] if delta else []) + [{"id": lzma.FILTER_LZMA2, "dict_size": dictionary}]
         encoded = [lzma.compress(chunk, format=lzma.FORMAT_RAW, filters=filters) for chunk in chunks]
-        packed.append(b"".join(chunk[:-1] for chunk in encoded) + b"\0")
+        stream = b"".join(chunk[:-1] for chunk in encoded) + b"\0"
+        intermediate_sizes.append(len(stream))
+        if double_lzma2: stream = lzma.compress(stream, format=lzma.FORMAT_RAW, filters=filters)
+        packed.append(stream)
     n = number7z(len(groups))
     header = (b"\x01\x04\x06\0" + n + b"\x09" + b"".join(number7z(len(p)) for p in packed) + b"\0"
               + b"\x07\x0b" + n + b"\0")
     folder = (b"\x02" if delta else b"\x01") + b"\x21\x21\x01" + bytes([prop])
     if zstd: folder = b"\x01\x04\x04\xf7\x11\x01"
     if delta: folder += b"\x21\x03\x01\0\x01\0"
+    if double_lzma2: folder = b"\x02" + (b"\x21\x21\x01" + bytes([prop])) * 2 + b"\x01\0"
     header += folder * len(groups)
-    header += b"\x0c" + b"".join(number7z(len(data)) * (2 if delta else 1) for data in payloads)
+    header += b"\x0c" + b"".join((number7z(intermediate_sizes[i]) if double_lzma2 else b"") +
+                                  number7z(len(data)) * (2 if delta else 1) for i, data in enumerate(payloads))
     header += b"\x0a\x01" + b"".join(struct.pack("<I", binascii.crc32(data)) for data in payloads) + b"\0"
     if solid > 1:
         header += b"\x08\x0d" + b"".join(number7z(len(group)) for group in groups)
@@ -58,7 +63,8 @@ def archive7z(files, reset_blocks=False, dictionary=1 << 20, solid=1, delta=Fals
     return b"7z\xbc\xaf\x27\x1c\0\x04" + struct.pack("<I", binascii.crc32(start)) + start + body + header
 
 
-def exercise(worker, root, name, blob, expected, memory=1 << 20, cancel=False, split=False, flatten=False, limit=1 << 30):
+def exercise(worker, root, name, blob, expected, memory=1 << 20, cancel=False, split=False, flatten=False, limit=1 << 30,
+             cancel_after_receipts=None):
     destination = root / name
     destination.mkdir()
     sources = []
@@ -71,7 +77,17 @@ def exercise(worker, root, name, blob, expected, memory=1 << 20, cancel=False, s
     request += "".join(f"source {p}\n" for p in sources) + "end\n"
     process = subprocess.Popen([str(worker)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     lines = []
-    reader = threading.Thread(target=lambda: lines.extend(process.stdout.read().splitlines()))
+    def read_reports():
+        receipts = 0
+        for raw in process.stdout:
+            line = raw.rstrip("\n")
+            lines.append(line)
+            if line.startswith("f "):
+                receipts += 1
+                if receipts == cancel_after_receipts:
+                    process.stdin.write("cancel\n")
+                    process.stdin.flush()
+    reader = threading.Thread(target=read_reports)
     reader.start()
     process.stdin.write(request)
     process.stdin.flush()
@@ -79,7 +95,7 @@ def exercise(worker, root, name, blob, expected, memory=1 << 20, cancel=False, s
         process.stdin.write("cancel\n")
         process.stdin.flush()
     max_threads = 0
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + (90 if cancel_after_receipts else 30)
     while process.poll() is None and time.monotonic() < deadline:
         if os.path.isdir(f"/proc/{process.pid}/task"):
             max_threads = max(max_threads, len(os.listdir(f"/proc/{process.pid}/task")))
@@ -90,8 +106,8 @@ def exercise(worker, root, name, blob, expected, memory=1 << 20, cancel=False, s
     reader.join()
     process.stdin.close()
     assert lines[0] == "ready", lines
-    assert lines[-1] == ("cancelled" if cancel else "ok"), lines
-    if not cancel:
+    assert lines[-1] == ("cancelled" if cancel or cancel_after_receipts else "ok"), lines[-20:]
+    if not cancel and not cancel_after_receipts:
         receipts = {}
         for line in lines:
             if line.startswith("f "):
@@ -120,6 +136,26 @@ def main():
         lines, _ = exercise(worker, root, "solid-delta", archive7z(solid_files, solid=3, delta=True), solid_files)
         assert "workers=4 " in next(line for line in lines if line.startswith("t ")), lines
         print("PASS multi-file solid folders with Delta + LZMA2 and Unicode paths")
+        # A large index like ASTRO's used to charge the same shared paths to
+        # every SDK reader and select two workers. Exercise actual readers and
+        # overlapping extraction, then cancel instead of creating 170k files.
+        indexed = [(f"dir{i % 256:03d}/entry{i:06d}-" + "asset_" * 10 + ".bin", b"x") for i in range(170000)]
+        lines, _ = exercise(worker, root, "large-index", archive7z(indexed, dictionary=1 << 18, solid=128), [],
+                            memory=1 << 18, cancel_after_receipts=128)
+        timings = next(line for line in lines if line.startswith("t "))
+        assert "workers=4 " in timings and "decoder_threads=1 " in timings, timings
+        assert int(re.search(r"active_peak=(\d+)", timings)[1]) >= 2, timings
+        assert int(re.search(r"planned_mib=(\d+)", timings)[1]) <= 320, timings
+        assert int(re.search(r"opening_mib=(\d+)", timings)[1]) <= 320, timings
+        print("PASS large shared index retains four workers within budget:", timings)
+        # A valid ~18 MiB names header can expand into >500 MiB of distinct
+        # directory-prefix strings. Reject while validating, before mkdir/output.
+        deep = [(f"id{i:05d}/" + "abcdefghijklmnop/" * 126 + "x", b"x") for i in range(4096)]
+        try: exercise(worker, root, "deep-index", archive7z(deep, dictionary=1 << 18, solid=128), [], memory=1 << 18)
+        except AssertionError as error: assert "needs more memory" in str(error), error
+        else: raise AssertionError("accepted an over-budget temporary directory index")
+        assert not any((root / "deep-index").iterdir())
+        print("PASS validation bounds deep-path prefix expansion before creating output")
         if shutil.which("zstd"):
             zstd_files = [("zstandard.bin", data)]
             exercise(worker, root, "zstandard", archive7z(zstd_files, zstd=True), zstd_files)
@@ -132,6 +168,10 @@ def main():
         # threads really exist, independently of our configured-thread report.
         if os.path.isdir("/proc/self/task"): assert observed > 4, observed
         print("PASS LZMA2 reset-block MT:", timings, "observed OS threads=", observed)
+        compound = [("compound.bin", data)]
+        lines, _ = exercise(worker, root, "compound", archive7z(compound, double_lzma2=True), compound, memory=2 << 20)
+        assert "decoder_threads=1 " in next(line for line in lines if line.startswith("t ")), lines
+        print("PASS compound LZMA2 codecs cannot multiply the shared thread-memory allowance")
         exercise(worker, root, "cancel", archive7z(files, reset_blocks=True), [], cancel=True)
         small = [("folder/image.exfat", b"image")]
         exercise(worker, root, "flatten", archive7z(small), [("image.exfat", b"image")], flatten=True)
