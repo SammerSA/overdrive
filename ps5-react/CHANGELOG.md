@@ -1,5 +1,33 @@
 # Changelog
 
+## Local patch — parallel 7z extraction
+
+- Decode validated 7z archives in the separate worker with pinned 7-Zip 26.05.
+  Schedule independent folders across up to four readers, or use native LZMA2
+  reset-block threads for one folder when memory permits. Keep the total planned
+  worker memory at 320 MiB; large dictionaries automatically reduce threading.
+- Preserve multipart reads, safe paths, output limits, SHA-256 receipts, CRC
+  verification, cancellation and publication only after complete extraction.
+  Small archives retain the app-decoder fallback if no loader is available.
+- Refuse nonempty staging without an ownership record instead of deleting it.
+- Validate with `python3 tools/test_sevenzip_threads.py` and `python3 tools/test_archives.py`.
+
+## Local patch — TorBox connection limit
+
+- Start TorBox CDN downloads at sixteen connections, including redirects to `tb-cdn.st`,
+  `tb-cdn.io`, `tb-cdn.cx` and Cloudflare's `tb-cdn.earth`. Keep other debrid services
+  at eight and FileKeeper gateways at sixteen. Retain adaptive congestion backoff.
+- Retain debrid retry delays for these TorBox domains. The app also caps converted
+  TorBox transfers at enqueue time, covering future CDN domains and saved jobs.
+- Validate native host-policy boundaries with `python3 tools/test_network_policy.py`.
+
+## Local patch — malformed one-byte CDN range responses
+
+- Retry a malformed one-byte range response with a validated 16-byte prefix.
+  This handles Real-Debrid nodes that return the entire file for `bytes=0-0`
+  while retaining exact range and length checks, tiny-file support, mirror
+  validation and resume integrity checks.
+
 ## Unreleased — package links served by the app
 
 - `Packages.proxy({url, total, file, token, port})` (ABI v21) serves `url` for the console's

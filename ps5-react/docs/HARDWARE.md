@@ -1,5 +1,29 @@
 # Hardware evidence
 
+## Local parallel 7z helper — 2026-10-26
+
+Firmware 12.20 (12.200.005), kstuff and ShadowMountPlus active. Exact stripped
+`rar-extract.elf` SHA-256:
+`c1c6faf9db9f6ff5ca6757e805752d4894e9ccaca873d34dac4494df8c22e2dd`.
+Sent directly to the running ELF loader on port 9021, followed by a 7ZX1 request.
+
+- A 48 MiB fixture with four solid folders, three files per folder, Delta +
+  LZMA2 and Unicode paths completed with four workers used and four concurrently
+  active. Every SHA-256 receipt and FTP read-back hash matched the inputs.
+- The same fixture took 450 ms with one worker and 413 ms with four, excluding
+  the memory claim. This highly compressible synthetic fixture was write-bound;
+  it does not establish a speedup for game archives.
+- A 64 MiB single-file stream with independent LZMA2 reset blocks completed with
+  a four-thread decoder setting; output hash matched. Linux testing separately
+  observed actual SDK worker threads, rather than only the configured count.
+- A fixture declaring a 256 MiB dictionary selected one worker/decoder and
+  extracted correctly. An immediate cancellation returned `cancelled` before
+  decoding. All test files/directories were removed.
+- The fixed 320 MiB pre-decode memory claim took 148–183 ms across these tests.
+
+This validates this helper and protocol on this console. The application build
+and other firmware/loader combinations require their own execution evidence.
+
 ## User-confirmed baseline — 2026-10-05
 
 PS5 Slim Digital, firmware 13.60, kstuff and ShadowMount active, without etaHEN.

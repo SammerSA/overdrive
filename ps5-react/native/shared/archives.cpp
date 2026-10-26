@@ -832,11 +832,11 @@ void run(const std::shared_ptr<Job>& pointer) {
   };
   std::uint64_t seven_zip_memory = 0;
   const auto refusal = request.stream ? streamed() : preflight(request.sources, seven_zip_memory);
-  // A 7z refused for the heap's memory alone, within rar-extract's budget, goes to the worker; its paths go
-  // to the worker's line protocol. Without a worker the refusal stands.
+  // Validated 7z goes to the native threaded decoder, within its memory budget.
+  // The app can still decode a small archive itself if the worker cannot start.
   const bool lines = request.destination.find('\n') == std::string::npos &&
       std::none_of(request.sources.begin(), request.sources.end(), [](const std::string& path) { return path.find('\n') != std::string::npos; });
-  const bool seven_zip_worker = !refusal.empty() && seven_zip_memory && seven_zip_memory <= seven_zip_worker_memory && lines;
+  const bool seven_zip_worker = seven_zip_memory && seven_zip_memory <= seven_zip_worker_memory && lines;
   if (!refusal.empty() && !seven_zip_worker) {
     trace("preflight refused", refusal.c_str());
     fail(job, refusal);
@@ -858,7 +858,7 @@ void run(const std::shared_ptr<Job>& pointer) {
       // here. The parts changed since (a set renamed after its download) or the console restarted,
       // and the files can never be reused. It is cleared instead of blocking every retry with
       // something the player would have to delete by hand (issue #110).
-      if (attempt) {
+      if (attempt || !recorded) {
         fail(job, "Staging belongs to another extraction; files preserved.");
         return;
       }
@@ -901,12 +901,16 @@ void run(const std::shared_ptr<Job>& pointer) {
   // RAR sets go to rar-extract; everything else, and RAR when the worker cannot start, to libarchive. Only
   // the worker waits for volumes: a streamed set it cannot take fails with nothing written, and the app
   // extracts it once every volume is there.
+  bool extracted = false;
   if (request.stream) {
     if (!extract_rar(job, staging, receipt, error) && error.empty()) error = "Extracting while downloading needs the RAR worker.";
   } else if (seven_zip_worker) {
-    if (!extract_worker(job, staging, receipt, error, seven_zip_request(request, staging, seven_zip_memory), "7z") && error.empty())
+    extracted = extract_worker(job, staging, receipt, error, seven_zip_request(request, staging, seven_zip_memory), "7z");
+    if (!extracted && !refusal.empty() && error.empty())
       error = "This archive needs the payload loader to extract: none answered on port 9021.";
-  } else if (!rar_volumes(request) || !extract_rar(job, staging, receipt, error)) {
+  }
+  // A small 7z can still use the app decoder when the helper cannot start.
+  if (!request.stream && error.empty() && !extracted && (!rar_volumes(request) || !extract_rar(job, staging, receipt, error))) {
     const MemoryHold memory;
     std::unique_ptr<Rar5PasswordReader> decrypted;
     auto* archive = open_archive(job, error, decrypted);

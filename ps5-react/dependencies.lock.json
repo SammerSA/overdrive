@@ -1,4 +1,9 @@
 {
+  "sevenZipSource": {
+    "version": "26.05",
+    "url": "https://github.com/ip7z/7zip/releases/download/26.05/7z2605-src.tar.xz",
+    "sha256": "0b6080b8c3e7a579161d2d495224c0e51c467576cb4c7048b0ab485ef44cc22e"
+  },
   "embeddedReact": {
     "url": "https://github.com/TheMasterCoder007/embedded-react.git",
     "revision": "cf5dfe4fae966fe21a265acc3dd3b054d245f981",

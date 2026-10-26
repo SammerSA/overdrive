@@ -4,8 +4,8 @@
 // rar-extract: extracts one RAR set with RarLab's UnRAR library, in a process of its own. UnRAR's license
 // does not let it be linked into the GPL engine, so the engine talks to this program over a stream
 // (the PS5 payload loader's socket, or a pipe on the desktop) and never loads its code. Its own
-// crashes and C++ exceptions stay in this process too. A request that starts with "7ZX1" is a 7z whose
-// decoder needs more memory than the app's heap can give, extracted with libarchive (sevenzip.cpp).
+// crashes and C++ exceptions stay in this process too. "7ZX1" selects the bounded native
+// 7-Zip decoder and independent-folder thread pool (sevenzip.cpp).
 //
 // Request, one item per line: "RARX1", then "threads <n>" (0 picks from the cores), "window <bytes>",
 // "limit <bytes>", "flatten <extension>"..., "reserved <text>", "password <hex>", "dest <directory>",

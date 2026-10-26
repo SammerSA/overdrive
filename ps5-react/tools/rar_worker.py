@@ -4,8 +4,8 @@
 """rar-extract (native/rar_worker): RarLab's UnRAR library and a small MIT-licensed driver, built as a
 program of its own. UnRAR's license allows its use to extract RAR archives but is not GPL-compatible,
 so it is never linked into the engine; the engine starts this program and reads its reports. The same
-program extracts a 7z too large for the engine's heap with libarchive (sevenzip.cpp), so `libraries`
-include libarchive and what it links.
+program extracts 7z with hash-pinned native 7-Zip decoders (sevenzip.cpp), using
+bounded folder parallelism and LZMA2 reset-block threading outside the app heap.
 """
 import subprocess
 import sys
@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from common import DEPS, LOCK, ROOT, digest, fetch
+from sevenzip_source import sevenzip_source, source_files
 
 # The library objects of UnRAR's makefile, without its command line front end and unrar.dll layer.
 SOURCES = ("strlist strfn pathfn smallfn global file filefn filcreat archive arcread unicode system crypt "
@@ -65,13 +66,16 @@ def build(output, compiler, flags=(), libraries=(), env=None):
     """Compiles UnRAR and the driver with `compiler` (a command list) and links `output`, skipping objects
     and the link when their command and inputs are unchanged since the last build."""
     source = unrar_source()
+    seven = sevenzip_source()
+    seven_flags = ["-DZ7_EXTRACT_ONLY", "-DZ7_NO_CRYPTO", "-DZ7_AFFINITY_DISABLE", "-isystem", str(seven)]
     objects = output.parent / (output.name + ".obj")
     objects.mkdir(parents=True, exist_ok=True)
     common = [*compiler, "-O2", "-fexceptions", *DEFINES, *flags]
 
     def compile_one(item):
         path, extra = item
-        obj = objects / (path.stem + ".o")
+        # Distinct namespaces: both UnRAR and 7-Zip have e.g. CRC/Threads objects.
+        obj = objects / (("7z-" if seven in path.parents else "") + path.stem + ".o")
         depfile = obj.with_suffix(".d")
         # UnRAR's headers are a system include for the driver, which builds with the engine's warnings.
         command = [*map(str, common), *extra, "-isystem", str(source), "-MMD", "-MF", str(depfile),
@@ -88,7 +92,10 @@ def build(output, compiler, flags=(), libraries=(), env=None):
     library = ["-std=c++17", "-w"]
     driver = ["-std=c++20", "-Wall", "-Wextra", "-Werror"]
     items = [(source / f"{name}.cpp", library) for name in SOURCES] + [
-        (ROOT / "native/rar_worker" / name, driver) for name in ("rar_worker.cpp", "sevenzip.cpp")]
+        (ROOT / "native/rar_worker/rar_worker.cpp", driver),
+        (ROOT / "native/rar_worker/sevenzip.cpp", [*driver, *seven_flags])]
+    items += [(path, ["-w", *seven_flags, *(["-x", "c", "-std=gnu11"] if path.suffix == ".c" else ["-std=c++17"])])
+              for path in source_files(seven)]
     with ThreadPoolExecutor(8) as pool:
         built = list(pool.map(compile_one, items))
     command = [*map(str, compiler), *map(str, flags), *map(str, built), *map(str, libraries), "-o", str(output)]

@@ -3,7 +3,7 @@
 //
 // What rar-extract's extractors share, whatever the format: the request and report lines on standard
 // input and output, the engine's path rule, SHA-256 and the writer thread that writes, hashes and syncs
-// every file. Free of UnRAR's headers, so the 7z extractor, which uses libarchive, includes it too.
+// every file. Free of UnRAR's headers, so the native 7-Zip extractor includes it too.
 #pragma once
 #ifdef __APPLE__
 #include <CommonCrypto/CommonDigest.h>
@@ -11,6 +11,7 @@
 #include <openssl/evp.h>
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <condition_variable>
 #include <cstdint>
@@ -38,7 +39,7 @@ inline const char* const too_much_memory = "This archive needs more memory to ex
 inline constexpr size_t sha256_size = 32;
 
 inline std::mutex say_mutex;
-inline bool output_lost = false;
+inline std::atomic<bool> output_lost{false};
 
 inline void say(const std::string& line) {
   std::lock_guard lock(say_mutex);

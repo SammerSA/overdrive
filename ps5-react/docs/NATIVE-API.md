@@ -596,8 +596,8 @@ try { const {artifacts} = await task.done; console.log(artifacts); }
 finally { unsubscribe(); }
 ```
 
-`cancel()` requests cancellation. ZIP, TAR, 7z and RAR/RAR5 use libarchive in a
-worker thread. Supply ordered archive volumes; no full joined copy enters JS or
+`cancel()` requests cancellation. ZIP and TAR use libarchive in a worker thread;
+RAR and 7z prefer the separate extraction helper. Supply ordered archive volumes; no full joined copy enters JS or
 RAM. One extraction may run at a time. Source files are preserved. Output paths,
 links, entry counts and byte budgets are validated. Extraction publishes a staged
 directory only after successful reading and SHA-256 output receipts. A matching
@@ -625,14 +625,19 @@ read to refuse archives whose declared decoder windows (7z LZMA/LZMA2/PPMd/zstd
 and BCJ2 buffers, RAR5 windows, RAR PPMd, ZIP LZMA/XZ/zstd/PPMd, and an outer
 xz/zstd/lzip/lzma layer) exceed 64 MiB, since libarchive has no memory limit
 and the title's heap is fixed. That budget assumes nothing else large runs during extraction: don't
-extract while downloading. A 7z refused for that alone, whose largest folder declares at most 288 MiB
-(the 256 MiB LZMA2 dictionary repacks use), is extracted by `rar-extract` instead, in a process of its
-own started through the payload loader, with the console's memory rather than the title's heap. It first
-takes that memory and writes to every page; when the console needs over a second to hand it over (it is
+extract while downloading. Validated 7z with at most 288 MiB of declared decoder
+memory uses `rar-extract`, started through the payload loader, with native
+7-Zip 26.05 outside the title's heap. It schedules independent folders across up
+to four workers, or uses native LZMA2 reset-block threads for one folder. Metadata,
+writer buffers and decoder memory share a planned 320 MiB budget. Large dictionaries
+automatically reduce threading, and a stream without independent reset blocks may
+still decode serially. Before opening the SDK it claims and touches 320 MiB;
+when the console needs over a second to hand it over (it is
 freeing memory from everything else: a probe froze a console from 512 MiB on), it fails with "The console
 has too little free memory to extract this archive now. Close other apps and retry." before decoding.
-Without a payload loader it fails with "This archive needs the payload loader to extract: none answered
-on port 9021." Over 288 MiB the memory refusal stands. Self-extracting executables are refused. This API does not install PKGs or
+Without a loader, a small 7z retains the app's libarchive fallback; a large one
+fails with "This archive needs the payload loader to extract: none answered on
+port 9021." Over 288 MiB the memory refusal stands. Self-extracting executables are refused. This API does not install PKGs or
 register games. Desktop extraction and successful PS5 linking are not console
 execution evidence.
 

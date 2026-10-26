@@ -482,7 +482,8 @@ std::string check(Volumes& in, std::uint64_t& declared) {
   if (!cursor.ok) return malformed;
   std::uint64_t memory = 0;
   for (const auto& item : main.folders) memory = std::max(memory, folder_memory(item, main, in));
-  declared = memory;
+  // A positive value also identifies a validated Copy-only 7z to the worker router.
+  declared = std::max<std::uint64_t>(1, memory);
   return fits(memory);
 }
 }

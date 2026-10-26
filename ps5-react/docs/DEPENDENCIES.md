@@ -21,7 +21,7 @@ No proprietary Sony modules are redistributed.
 | SheenBidi | 3.0.0 (Apache-2.0), SHA-256-pinned release archive (`sheenBidi`): the Unicode bidirectional algorithm for right-to-left text, compiled as one translation unit into both hosts. Builds copy its license to `notices/SheenBidi-LICENSE`. |
 | Noto fonts | Noto Sans SC, TC and JP 2.004, Devanagari 2.007, Bengali 3.011 and Arabic 2.013 (SIL OFL 1.1), pinned by commit and SHA-256 (`notoFonts`). Packaged only for the scripts an app lists in `textFonts`, subset by `tools/text_fonts.py`; builds then copy `licenses/Noto-fonts-LICENSE.txt` to `notices/`. |
 | Material Design sound resources | The starter's interface sounds, (c) Google, CC BY 4.0: six files from the pack's `wav` set, mixed to mono, trimmed, faded and normalized by `tools/ui_sounds.mjs`. Attribution and changes: `licenses/material-sounds-NOTICE.txt`; builds copy it to `notices/material-sounds-NOTICE.txt`. Keep it with any app that ships these sounds. |
-| UnRAR | RarLab unrarsrc 7.2.1, SHA-256-pinned (`unrarSource`), patched by `patches/unrar-worker.patch`. UnRAR license (free to use for extracting RAR archives; not GPL-compatible). Linked only into `rar-extract` (`native/rar_worker`, MIT), a separate program the engine starts for RAR sets (the payload loader on the console, a child process on the desktop); never linked into the engine. `rar-extract` also links the archive ports' libarchive and its libraries, for 7z archives over the engine's heap budget. Builds copy its license to `notices/unRAR-license.txt`. |
+| UnRAR | RarLab unrarsrc 7.2.1, SHA-256-pinned (`unrarSource`), patched by `patches/unrar-worker.patch`. UnRAR license (free to use for extracting RAR archives; not GPL-compatible). Linked only into `rar-extract` (`native/rar_worker`, MIT driver), a separate program the engine starts for RAR sets (the payload loader on the console, a child process on the desktop); never linked into the engine. The same helper uses native 7-Zip for 7z. Builds copy the UnRAR license to `notices/unRAR-license.txt`. |
 | FFmpeg | 7.1.5, SHA-256-pinned release archive (`ffmpeg` in the lock file), built static by `tools/ffmpeg.py` with the same components for both hosts: libavformat, libavcodec, libavutil, libswresample and libswscale, configured `--enable-version3` without GPL parts, so LGPL-3.0-or-later. Linked only into apps with `"video": true`; the PS5 build uses the pinned OpenSSL for https. Builds copy `LICENSE.md` and `COPYING.LGPLv3` to `notices/`. The build's corresponding source is the pinned archive plus that configure line. |
 | ArtCNN C4F16 | The mpv user shader `GLSL/ArtCNN_C4F16.glsl` of [ArtCNN](https://github.com/Artoriuz/ArtCNN) at commit `8789539dfae120f2877a89bb6218026d56809612`, unchanged, embedded by `native/shared/upscalers/ArtCNN_C4F16.glsl.inc` for `<Video upscale>`. MIT; builds copy `licenses/ArtCNN-LICENSE` to `notices/`. |
 | Anime4K Upscale CNN x2 | The mpv user shaders `glsl/Upscale/Anime4K_Upscale_CNN_x2_{S,M,L,VL,UL}.glsl` of [Anime4K](https://github.com/bloc97/Anime4K) at commit `7684e9586f8dcc738af08a1cdceb024cc184f426`, unchanged, embedded by `native/shared/upscalers/` for `<Video upscale>`. MIT; builds copy `licenses/Anime4K-LICENSE` to `notices/`. |
@@ -145,6 +145,23 @@ are useful build output, not a substitute for this source-distribution step.
 The Lapy SDK compatibility patch should be proposed upstream once hardware
 qualification confirms this integration. It preserves all 32 attribute bytes
 required by the current SDK. No upstream contribution has been submitted.
+
+## Native 7z extraction worker
+
+`sevenZipSource` pins unmodified 7-Zip 26.05 and its SHA-256. The separate
+`rar-extract` program links extraction-only 7z handlers and decoders (LZMA,
+LZMA2, Copy, Delta/branch filters, PPMd, BZip2, Deflate and Zstandard), without encoders,
+7-Zip RAR code or crypto. Most C decoder files are public domain; the C++
+handler/support code is LGPL-2.1-or-later; Zstandard and XXH64 carry their BSD
+notices in `DOC/License.txt`. The MIT driver in
+`native/rar_worker/sevenzip.cpp` adapts the SDK interfaces without importing
+another payload's installation/UI or IPC behavior.
+
+Builds preserve `DOC/License.txt` and `DOC/copying.txt` as
+`notices/7zip-LICENSE.txt` and `notices/7zip-LGPL-2.1.txt`. Distributions must
+provide corresponding helper source/build scripts and the pinned SDK source,
+or another compliant LGPL source/relinking arrangement. UnRAR retains its
+separate license; the helper is never linked into the GPL application.
 
 ## Optional networking ports
 

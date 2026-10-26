@@ -16,6 +16,7 @@ import urllib.request
 import zipfile
 
 from rar_worker import build as build_rar_worker, unrar_source
+from sevenzip_source import sevenzip_source
 from common import layouts, layout_directory, resource_files, ROOT, DEPS, LOCK, run, digest, verify, fetch, app_files, bundle, dependency, stb_image, refresh_rate_mask
 from network_ports import ports, copy_notices
 from ca_bundle import ca_bundle
@@ -246,7 +247,7 @@ def main():
          ROOT / "native/ps5/payloads/pkg_installer.c", "-lkernel_sys", "-lSceUserService"],
         env=env, log=BUILD / "pkg-installer.log")
     # RAR sets extract in a payload of their own: UnRAR's license keeps its code out of this GPL app. So
-    # does a 7z that needs more memory than the app's heap gives, with the engine's own libarchive.
+    # do 7z archives, using native 7-Zip with bounded parallel decoding outside the app heap.
     rar_extract = build_rar_worker(BUILD / "rar-extract.elf", [sdk / "bin/prospero-clang++"],
                                    ["-I", archive_ports / "include"], [*archive_libs, builtins], env)
     # Opens the app again after it closes, which the app itself cannot do.
@@ -332,6 +333,8 @@ def main():
         for name in ("lapy.elf", "lapy-manifest.json"):
             (app / name).unlink(missing_ok=True)
     shutil.copy2(unrar_source() / "license.txt", notices / "unRAR-license.txt")
+    shutil.copy2(sevenzip_source() / "DOC/License.txt", notices / "7zip-LICENSE.txt")
+    shutil.copy2(sevenzip_source() / "DOC/copying.txt", notices / "7zip-LGPL-2.1.txt")
     stb = (stb_image() / "stb_image.h").read_text()
     (notices / "stb_image-LICENSE").write_text(stb[stb.index("This software is available under 2 licenses"):])
     copy_notices(compatibility_client, notices / "networking")
